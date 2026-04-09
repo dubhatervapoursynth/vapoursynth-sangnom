@@ -9,6 +9,8 @@ project('SangNom', 'cpp',
 cflags = [
 ]
 
+host_cpu_family = host_machine.cpu_family()
+
 if host_cpu_family.startswith('x86')
     cflags += ['-DVS_TARGET_CPU_X86=1']
 endif
