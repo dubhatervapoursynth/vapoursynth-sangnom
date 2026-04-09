@@ -8,8 +8,8 @@
  *  This project is licensed under the MIT license. Binaries are GPL v2.
  **/
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 #include <cstdint>
 #include <cmath>
@@ -26,7 +26,7 @@ static const size_t alignment = 32;
 
 typedef struct SangNomData
 {
-    VSNodeRef *node;
+    VSNode *node;
     const VSVideoInfo *vi;  // input video info
     VSVideoInfo ovi;        // output video info
 
@@ -1515,15 +1515,9 @@ static inline void sangnom_c(T *dstp, const int dstStride, const int w, const in
     finalizePlane_c<T, IType>(dstp + offset * dstStride, dstStride, w, h, d->bufferStride, d->aaf[plane], buffers);
 }
 
-static void VS_CC sangnomInit(VSMap *in, VSMap *out, void **instanceData, VSNode* node, VSCore *core, const VSAPI *vsapi)
+static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
 {
-    SangNomData *d = reinterpret_cast<SangNomData*> (*instanceData);
-    vsapi->setVideoInfo(&d->ovi, 1, node);
-}
-
-static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    SangNomData *d = reinterpret_cast<SangNomData*> (*instanceData);
+    SangNomData *d = reinterpret_cast<SangNomData*> (instanceData);
 
     if (activationReason == arInitial) {
 
@@ -1536,10 +1530,10 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
         int offset = 42; // Initialise it to shut up a warning.
 
         if (d->order == SNOT_DFR) {
-            const VSMap *props = vsapi->getFramePropsRO(src);
+            const VSMap *props = vsapi->getFramePropertiesRO(src);
             int err;
 
-            int64_t field_based = vsapi->propGetInt(props, "_FieldBased", 0, &err);
+            int64_t field_based = vsapi->mapGetInt(props, "_FieldBased", 0, &err);
             if (err) {
                 vsapi->setFilterError("SangNom: clip's frames must have the _FieldBased property when order is 0 (double rate output).", frameCtx);
                 vsapi->freeFrame(src);
@@ -1562,36 +1556,36 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
         }
 
         //auto dst = vsapi->copyFrame(src, core);
-        auto dst = vsapi->newVideoFrame(d->ovi.format, d->ovi.width, d->ovi.height, src, core);
+        auto dst = vsapi->newVideoFrame(&d->ovi.format, d->ovi.width, d->ovi.height, src, core);
 
         /////////////////////////////////////////////////////////////////////////////////////
-        void *bufferLine = vs_aligned_malloc<void>(d->bufferStride * d->vi->format->bytesPerSample * (d->vi->format->sampleType == stInteger ? 2 : 1), alignment);               // line buffer used in process buffers
+        void *bufferLine = vsh::vsh_aligned_malloc<void>(d->bufferStride * d->vi->format.bytesPerSample * (d->vi->format.sampleType == stInteger ? 2 : 1), alignment);               // line buffer used in process buffers
 
-        size_t bufferPoolSize = d->vi->format->bytesPerSample * d->bufferStride * (d->bufferHeight + 1) * TOTAL_BUFFERS;
-        void *bufferPool = vs_aligned_malloc<void>(bufferPoolSize, alignment);
+        size_t bufferPoolSize = d->vi->format.bytesPerSample * d->bufferStride * (d->bufferHeight + 1) * TOTAL_BUFFERS;
+        void *bufferPool = vsh::vsh_aligned_malloc<void>(bufferPoolSize, alignment);
         memset(bufferPool, 0, bufferPoolSize);
 
         void *buffers[TOTAL_BUFFERS];   // plane buffers used in all three steps
 
         // separate bufferpool to multiple pieces
         for (int i = 0; i < TOTAL_BUFFERS; ++i)
-            buffers[i] = reinterpret_cast<uint8_t*>(bufferPool) + i * d->bufferStride * (d->bufferHeight + 1) * d->vi->format->bytesPerSample;
+            buffers[i] = reinterpret_cast<uint8_t*>(bufferPool) + i * d->bufferStride * (d->bufferHeight + 1) * d->vi->format.bytesPerSample;
         /////////////////////////////////////////////////////////////////////////////////////
 
-        for (int plane = 0; plane < d->vi->format->numPlanes; ++plane) {
+        for (int plane = 0; plane < d->vi->format.numPlanes; ++plane) {
 
             auto srcp = vsapi->getReadPtr(src, plane);
             auto dstp = vsapi->getWritePtr(dst, plane);
-            auto dstStride = vsapi->getStride(dst, plane) / d->vi->format->bytesPerSample;
+            auto dstStride = vsapi->getStride(dst, plane) / d->vi->format.bytesPerSample;
             auto width = vsapi->getFrameWidth(dst, plane);
             auto height = vsapi->getFrameHeight(dst, plane);
 
             if (d->dh) {
                 // always process the plane if dh=true
                 // copy target field
-                vs_bitblt(dstp + offset * vsapi->getStride(dst, plane), vsapi->getStride(dst, plane) * 2,
+                vsh::bitblt(dstp + offset * vsapi->getStride(dst, plane), vsapi->getStride(dst, plane) * 2,
                           srcp, vsapi->getStride(src, plane),
-                          vsapi->getFrameWidth(dst, plane) * d->vi->format->bytesPerSample, vsapi->getFrameHeight(src, plane));
+                          vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample, vsapi->getFrameHeight(src, plane));
             } else {
                 if (!d->planes[plane]) {
                     // copy whole plane
@@ -1599,9 +1593,9 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
                     continue;
                 }
                 // copy target field
-                vs_bitblt(dstp + offset * vsapi->getStride(dst, plane), vsapi->getStride(dst, plane) * 2,
+                vsh::bitblt(dstp + offset * vsapi->getStride(dst, plane), vsapi->getStride(dst, plane) * 2,
                           srcp + offset * vsapi->getStride(src, plane), vsapi->getStride(src, plane) * 2,
-                          vsapi->getFrameWidth(dst, plane) * d->vi->format->bytesPerSample, vsapi->getFrameHeight(src, plane) / 2);
+                          vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample, vsapi->getFrameHeight(src, plane) / 2);
             }
 
             // copy the field which can't be interpolated
@@ -1610,19 +1604,19 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
                 // just copy the data from its correspond top field
                 std::memcpy(dstp + (height - 1) * vsapi->getStride(dst, plane),
                             dstp + (height - 2) * vsapi->getStride(dst, plane),
-                            vsapi->getFrameWidth(dst, plane) * d->vi->format->bytesPerSample);
+                            vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample);
             } else {
                 // keep bottom field so the top line can't be interpolated
                 // just copy the data from its correspond bottom field
                 std::memcpy(dstp,
                             dstp + vsapi->getStride(dst, plane),
-                            vsapi->getFrameWidth(dst, plane) * d->vi->format->bytesPerSample);
+                            vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample);
             }
 
 #ifdef VS_TARGET_CPU_X86
 
-            if (d->vi->format->sampleType == stInteger) {
-                if (d->vi->format->bitsPerSample == 8)
+            if (d->vi->format.sampleType == stInteger) {
+                if (d->vi->format.bitsPerSample == 8)
                     sangnom_sse<uint8_t, int16_t>(dstp, dstStride, width, height, d, offset, plane, reinterpret_cast<uint8_t**>(buffers), reinterpret_cast<int16_t*>(bufferLine));
                 else
                     sangnom_sse<uint16_t, int32_t>(reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, offset,  plane, reinterpret_cast<uint16_t**>(buffers), reinterpret_cast<int32_t*>(bufferLine));
@@ -1631,8 +1625,8 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
             }
 #else
 
-            if (d->vi->format->sampleType == stInteger) {
-                if (d->vi->format->bitsPerSample == 8)
+            if (d->vi->format.sampleType == stInteger) {
+                if (d->vi->format.bitsPerSample == 8)
                     sangnom_c<uint8_t, int16_t>(dstp, dstStride, width, height, d, offset, plane, reinterpret_cast<uint8_t**>(buffers), reinterpret_cast<int16_t*>(bufferLine));
                 else
                     sangnom_c<uint16_t, int32_t>(reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<uint16_t**>(buffers), reinterpret_cast<int32_t*>(bufferLine));
@@ -1643,8 +1637,8 @@ static const VSFrameRef *VS_CC sangnomGetFrame(int n, int activationReason, void
 #endif
         }
 
-        vs_aligned_free(bufferLine);
-        vs_aligned_free(bufferPool);
+        vsh::vsh_aligned_free(bufferLine);
+        vsh::vsh_aligned_free(bufferPool);
 
         vsapi->freeFrame(src);
         return dst;
@@ -1665,35 +1659,35 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
 
     int err;
 
-    d->node = vsapi->propGetNode(in, "clip", 0, 0);
+    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
     d->vi = vsapi->getVideoInfo(d->node);
 
     try {
         if (d->vi->height % 2 != 0)
             throw std::string("height must be even");
 
-        d->order = int64ToIntS(vsapi->propGetInt(in, "order", 0, &err));
+        d->order = vsapi->mapGetIntSaturated(in, "order", 0, &err);
         if (err)
             d->order = SNOT_SFR_KT;
 
         if (d->order < 0 || d->order > 2)
             throw std::string("order must be 0 ... 2");
 
-        d->dh = !!vsapi->propGetInt(in, "dh", 0, &err);
+        d->dh = !!vsapi->mapGetInt(in, "dh", 0, &err);
         if (err)
             d->dh = false;
 
-        int numAA = vsapi->propNumElements(in, "aa");
+        int numAA = vsapi->mapNumElements(in, "aa");
         if (numAA <= 0) {
             for (int plane = 0; plane < 3; ++plane)
                 d->aa[plane] = 48;
         } else {
             for (int plane = 0; plane < numAA; ++plane) {
-                d->aa[plane] = int64ToIntS(vsapi->propGetInt(in, "aa", plane, &err));
+                d->aa[plane] = vsapi->mapGetIntSaturated(in, "aa", plane, &err);
                 if (d->aa[plane] < 0 || d->aa[plane] > 128)
                     throw std::string("aa must be 0 ... 128");
             }
-            for (int plane = numAA; plane < d->vi->format->numPlanes; ++plane)
+            for (int plane = numAA; plane < d->vi->format.numPlanes; ++plane)
                 d->aa[plane] = d->aa[numAA - 1];
         }
 
@@ -1701,7 +1695,7 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
         for (int i = 0; i < 3; ++i)
             d->planes[i] = false;
 
-        int m = vsapi->propNumElements(in, "planes");
+        int m = vsapi->mapNumElements(in, "planes");
 
         if (m <= 0) {
             for (int i = 0; i < 3; ++i) {
@@ -1709,8 +1703,8 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
             }
         } else {
             for (int i = 0; i < m; ++i) {
-                int64_t p = vsapi->propGetInt(in, "planes", i, &err);
-                if (p < 0 || p > d->vi->format->numPlanes - 1)
+                int64_t p = vsapi->mapGetInt(in, "planes", i, &err);
+                if (p < 0 || p > d->vi->format.numPlanes - 1)
                     throw std::string("planes index out of bound");
                 d->planes[p] = true;
             }
@@ -1718,14 +1712,14 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
 
     } catch (std::string &errorMsg) {
         vsapi->freeNode(d->node);
-        vsapi->setError(out, std::string("SangNom: ").append(errorMsg).c_str());
+        vsapi->mapSetError(out, std::string("SangNom: ").append(errorMsg).c_str());
         return;
     }
 
     // tweak aa value for different format
-    for (int plane = 0; plane < d->vi->format->numPlanes; ++plane) {
-        if (d->vi->format->sampleType == stInteger)
-            d->aaf[plane] = (d->aa[plane] * 21.0f / 16.0f) * (1 << (d->vi->format->bitsPerSample - 8));
+    for (int plane = 0; plane < d->vi->format.numPlanes; ++plane) {
+        if (d->vi->format.sampleType == stInteger)
+            d->aaf[plane] = (d->aa[plane] * 21.0f / 16.0f) * (1 << (d->vi->format.bitsPerSample - 8));
         else
             d->aaf[plane] = (d->aa[plane] * 21.0f / 16.0f) / 256.0f;
     }
@@ -1739,16 +1733,18 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
     d->bufferStride = (d->ovi.width + alignment - 1) & ~(alignment - 1);
     d->bufferHeight = (d->ovi.height + 1) >> 1;
 
-    vsapi->createFilter(in, out, "SangNom", sangnomInit, sangnomGetFrame, sangnomFree, fmParallel, 0, d, core);
+    VSFilterDependency deps[] = { {d->node, rpStrictSpatial} };
+    vsapi->createVideoFilter(out, "SangNom", d->vi, sangnomGetFrame, sangnomFree, fmParallel, deps, 1, d, core);
 }
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin)
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) 
 {
-    configFunc("com.mio.sangnom", "sangnom", "VapourSynth Single Field Deinterlacer", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("SangNom", "clip:clip;"
+    vspapi->configPlugin("com.mio.sangnom", "sangnom", "VapourSynth Single Field Deinterlacer", VS_MAKE_VERSION(43, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction("SangNom", "clip:vnode;"
         "order:int:opt;"
         "dh:int:opt;"
         "aa:int[]:opt;"
         "planes:int[]:opt;",
+        "clip:vnode;",
         sangnomCreate, nullptr, plugin);
 }

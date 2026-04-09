@@ -6,6 +6,13 @@ project('SangNom', 'cpp',
     version: '43.0',
 )
 
+cflags = [
+]
+
+if host_cpu_family.startswith('x86')
+    cflags += ['-DVS_TARGET_CPU_X86=1']
+endif
+
 incdir = include_directories(
     run_command(
         find_program('python', 'python3'),
@@ -21,6 +28,7 @@ shared_module('sangnom',
     files('src/sangnom.cpp'),
     gnu_symbol_visibility: 'hidden',
     include_directories: incdir,
+    cpp_args: cflags,
     install: true,
     install_dir: py.get_install_dir() / 'vapoursynth/plugins',
     name_prefix: '',
