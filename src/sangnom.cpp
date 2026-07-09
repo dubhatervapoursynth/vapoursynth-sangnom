@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <limits>
+#include <type_traits>
 #include <string>
 
 #ifdef VS_TARGET_CPU_X86
@@ -110,17 +112,19 @@ static inline __m128 sse_load_ps(const T *ptr)
 template <typename T, bool aligned>
 static inline void sse_store_si128(T *ptr, __m128i val)
 {
-    if (aligned)
+    if constexpr (aligned)
         _mm_store_si128(reinterpret_cast<__m128i*>(ptr), val);
-    _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr), val);
+    else
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr), val);
 }
 
 template <typename T, bool aligned>
 static inline void sse_store_ps(T *ptr, __m128 val)
 {
-    if (aligned)
+    if constexpr (aligned)
         _mm_store_ps(ptr, val);
-    _mm_storeu_ps(ptr, val);
+    else
+        _mm_storeu_ps(ptr, val);
 }
 
 template <typename T, bool isBorder, bool alignedLoad>
@@ -632,7 +636,9 @@ template <typename T, typename IType>
 static inline IType calculateSangNom(const T &p1, const T &p2, const T &p3)
 {
     IType sum = p1 * 4 + p2 * 5 - p3;
-    return (T)(sum >> 3);
+    using UType = typename std::make_unsigned<IType>::type;
+    UType shifted = static_cast<UType>(sum) >> 3;
+    return static_cast<IType>(std::min<UType>(shifted, std::numeric_limits<T>::max()));
 }
 
 template <>
@@ -1137,7 +1143,9 @@ static inline void processBuffers_c(T *bufferp, IType *bufferLine, const int buf
 template <BorderMode border, bool alignedLoad, bool alignedLoadBuffer, bool alignedStore>
 static inline void finalizePlaneLine_sse(const uint8_t *srcp, const uint8_t *srcpn2, uint8_t *dstpn, uint8_t *buffers[TOTAL_BUFFERS], int bufferOffset, const int w, const int pixelStep, const float aaf)
 {
-    const auto aa = _mm_set1_epi8(aaf);
+    // aaf is an unsigned threshold (up to 168) used via _mm_subs_epu8 below; go
+    // through int so the out-of-range float->char narrowing is not undefined.
+    const auto aa = _mm_set1_epi8(static_cast<char>(static_cast<int>(aaf)));
     const auto const_0 = _mm_setzero_si128();
 
     for (int x = 0; x < w; x += pixelStep) {
@@ -1219,7 +1227,9 @@ static inline void finalizePlaneLine_sse(const uint8_t *srcp, const uint8_t *src
 template <BorderMode border, bool alignedLoad, bool alignedLoadBuffer, bool alignedStore>
 static inline void finalizePlaneLine_sse(const uint16_t *srcp, const uint16_t *srcpn2, uint16_t *dstpn, uint16_t *buffers[TOTAL_BUFFERS], int bufferOffset, const int w, const int pixelStep, const float aaf)
 {
-    const auto aa = _mm_set1_epi16(aaf);
+    // aaf is an unsigned threshold (up to 43008) used via _mm_subs_epu16 below;
+    // go through int so the out-of-range float->short narrowing is not undefined.
+    const auto aa = _mm_set1_epi16(static_cast<short>(static_cast<int>(aaf)));
     const auto const_0 = _mm_setzero_si128();
 
     for (int x = 0; x < w; x += pixelStep) {
@@ -1499,7 +1509,7 @@ static inline void sangnom_sse(T *dstp, const int dstStride, const int w, const 
     for (int i = 0; i < TOTAL_BUFFERS; ++i)
         processBuffers_sse(buffers[i], bufferLine, d->bufferStride, d->bufferHeight);
 
-    finalizePlane_sse<T, IType>(dstp + offset * dstStride, dstStride, w, h, d->bufferStride, d->aaf[plane], buffers);
+    finalizePlane_sse<T, IType>(dstp + offset * dstStride, dstStride, w, h, d->bufferStride, static_cast<T>(d->aaf[plane]), buffers);
 }
 
 #endif
@@ -1512,7 +1522,24 @@ static inline void sangnom_c(T *dstp, const int dstStride, const int w, const in
     for (int i = 0; i < TOTAL_BUFFERS; ++i)
         processBuffers_c<T, IType>(buffers[i], bufferLine, d->bufferStride, d->bufferHeight);
 
-    finalizePlane_c<T, IType>(dstp + offset * dstStride, dstStride, w, h, d->bufferStride, d->aaf[plane], buffers);
+    finalizePlane_c<T, IType>(dstp + offset * dstStride, dstStride, w, h, d->bufferStride, static_cast<T>(d->aaf[plane]), buffers);
+}
+
+template <typename T, typename IType>
+static inline void sangnomProcessPlane(T *dstp, const int dstStride, const int w, const int h, SangNomData *d, int offset, int plane, T *buffers[TOTAL_BUFFERS], IType *bufferLine)
+{
+#ifdef VS_TARGET_CPU_X86
+    constexpr int pixelStep = sseBytes / sizeof(T);
+    // The SSE border tiling processes fixed-width vectors and reads a 3-pixel halo
+    // on each side; it is only valid when the plane holds at least two full
+    // vectors. Narrower planes (e.g. tiny chroma) fall back to the scalar path,
+    // which is bit-identical and clamps at the true plane edge.
+    if (w >= 2 * pixelStep) {
+        sangnom_sse<T, IType>(dstp, dstStride, w, h, d, offset, plane, buffers, bufferLine);
+        return;
+    }
+#endif
+    sangnom_c<T, IType>(dstp, dstStride, w, h, d, offset, plane, buffers, bufferLine);
 }
 
 static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
@@ -1559,17 +1586,27 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
         auto dst = vsapi->newVideoFrame(&d->ovi.format, d->ovi.width, d->ovi.height, src, core);
 
         /////////////////////////////////////////////////////////////////////////////////////
-        void *bufferLine = vsh::vsh_aligned_malloc<void>(d->bufferStride * d->vi->format.bytesPerSample * (d->vi->format.sampleType == stInteger ? 2 : 1), alignment);               // line buffer used in process buffers
+        size_t bufferLineSize = static_cast<size_t>(d->bufferStride) * d->vi->format.bytesPerSample * (d->vi->format.sampleType == stInteger ? 2 : 1);
+        void *bufferLine = vsh::vsh_aligned_malloc<void>(bufferLineSize, alignment);               // line buffer used in process buffers
 
-        size_t bufferPoolSize = d->vi->format.bytesPerSample * d->bufferStride * (d->bufferHeight + 1) * TOTAL_BUFFERS;
+        size_t bufferPoolSize = static_cast<size_t>(d->vi->format.bytesPerSample) * d->bufferStride * (d->bufferHeight + 1) * TOTAL_BUFFERS;
         void *bufferPool = vsh::vsh_aligned_malloc<void>(bufferPoolSize, alignment);
+
+        if (!bufferLine || !bufferPool) {
+            vsh::vsh_aligned_free(bufferLine);
+            vsh::vsh_aligned_free(bufferPool);
+            vsapi->setFilterError("SangNom: out of memory", frameCtx);
+            vsapi->freeFrame(src);
+            return nullptr;
+        }
+
         memset(bufferPool, 0, bufferPoolSize);
 
         void *buffers[TOTAL_BUFFERS];   // plane buffers used in all three steps
 
         // separate bufferpool to multiple pieces
         for (int i = 0; i < TOTAL_BUFFERS; ++i)
-            buffers[i] = reinterpret_cast<uint8_t*>(bufferPool) + i * d->bufferStride * (d->bufferHeight + 1) * d->vi->format.bytesPerSample;
+            buffers[i] = reinterpret_cast<uint8_t*>(bufferPool) + static_cast<size_t>(i) * d->bufferStride * (d->bufferHeight + 1) * d->vi->format.bytesPerSample;
         /////////////////////////////////////////////////////////////////////////////////////
 
         for (int plane = 0; plane < d->vi->format.numPlanes; ++plane) {
@@ -1613,28 +1650,14 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
                             vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample);
             }
 
-#ifdef VS_TARGET_CPU_X86
-
             if (d->vi->format.sampleType == stInteger) {
                 if (d->vi->format.bitsPerSample == 8)
-                    sangnom_sse<uint8_t, int16_t>(dstp, dstStride, width, height, d, offset, plane, reinterpret_cast<uint8_t**>(buffers), reinterpret_cast<int16_t*>(bufferLine));
+                    sangnomProcessPlane<uint8_t, int16_t>(dstp, dstStride, width, height, d, offset, plane, reinterpret_cast<uint8_t**>(buffers), reinterpret_cast<int16_t*>(bufferLine));
                 else
-                    sangnom_sse<uint16_t, int32_t>(reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, offset,  plane, reinterpret_cast<uint16_t**>(buffers), reinterpret_cast<int32_t*>(bufferLine));
+                    sangnomProcessPlane<uint16_t, int32_t>(reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<uint16_t**>(buffers), reinterpret_cast<int32_t*>(bufferLine));
             } else {
-                sangnom_sse<float, float>(reinterpret_cast<float*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<float**>(buffers), reinterpret_cast<float*>(bufferLine));
+                sangnomProcessPlane<float, float>(reinterpret_cast<float*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<float**>(buffers), reinterpret_cast<float*>(bufferLine));
             }
-#else
-
-            if (d->vi->format.sampleType == stInteger) {
-                if (d->vi->format.bitsPerSample == 8)
-                    sangnom_c<uint8_t, int16_t>(dstp, dstStride, width, height, d, offset, plane, reinterpret_cast<uint8_t**>(buffers), reinterpret_cast<int16_t*>(bufferLine));
-                else
-                    sangnom_c<uint16_t, int32_t>(reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<uint16_t**>(buffers), reinterpret_cast<int32_t*>(bufferLine));
-            } else {
-                sangnom_c<float, float>(reinterpret_cast<float*>(dstp), dstStride, width, height, d, offset, plane, reinterpret_cast<float**>(buffers), reinterpret_cast<float*>(bufferLine));
-            }
-
-#endif
         }
 
         vsh::vsh_aligned_free(bufferLine);
@@ -1678,6 +1701,8 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
             d->dh = false;
 
         int numAA = vsapi->mapNumElements(in, "aa");
+        if (numAA > d->vi->format.numPlanes)
+            throw std::string("number of aa values must not exceed the number of planes");
         if (numAA <= 0) {
             for (int plane = 0; plane < 3; ++plane)
                 d->aa[plane] = 48;
