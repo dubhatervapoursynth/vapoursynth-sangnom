@@ -3,7 +3,7 @@ project('SangNom', 'cpp',
     license: 'MIT',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
-    version: '43.0',
+    version: '45.0',
 )
 
 cflags = [

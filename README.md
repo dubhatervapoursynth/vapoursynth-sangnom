@@ -5,7 +5,7 @@
 
 ## Build ##
 
-*   compiler with c++11 support
+*   compiler with c++17 support
 *   -DVS_TARGET_CPU_X86 can enable the SSE2 code path which has a large benefit on performance
 ***
 
@@ -77,6 +77,7 @@ Or
 ## Frame properties ##
 
 *   the output is always flagged progressive (`_FieldBased` = 0) because every output line is either taken from or interpolated from a single field.
+*   if dh=True, the `_Field` property is removed since the output is a full frame and no longer a separated field.
 
 ***
 

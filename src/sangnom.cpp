@@ -16,6 +16,7 @@
 #include <cstring>
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <type_traits>
 #include <string>
 
@@ -1129,7 +1130,10 @@ static inline void processBuffers_c(T *bufferp, IType *bufferLine, const int buf
             const IType currLineP2 = loadPixel<IType, IType>(bufferLine, x, 2, bufferStride);
             const IType currLineP3 = loadPixel<IType, IType>(bufferLine, x, 3, bufferStride);
 
-            bufferpc[x] = (currLineM3 + currLineM2 + currLineM1 + currLine + currLineP1 + currLineP2 + currLineP3) / 16;
+            IType sum = (currLineM3 + currLineM2 + currLineM1 + currLine + currLineP1 + currLineP2 + currLineP3) / 16;
+            if constexpr (std::is_integral<T>::value)
+                sum = std::min<IType>(sum, std::numeric_limits<T>::max());
+            bufferpc[x] = static_cast<T>(sum);
         }
 
         bufferpc += bufferStride;
@@ -1585,7 +1589,10 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
         //auto dst = vsapi->copyFrame(src, core);
         auto dst = vsapi->newVideoFrame(&d->ovi.format, d->ovi.width, d->ovi.height, src, core);
 
-        vsapi->mapSetInt(vsapi->getFramePropertiesRW(dst), "_FieldBased", 0, maReplace);
+        VSMap *dstProps = vsapi->getFramePropertiesRW(dst);
+        vsapi->mapSetInt(dstProps, "_FieldBased", 0, maReplace);
+        if (d->dh) // a height doubled field is a full frame so the field property no longer applies
+            vsapi->mapDeleteKey(dstProps, "_Field");
 
         /////////////////////////////////////////////////////////////////////////////////////
         size_t bufferLineSize = static_cast<size_t>(d->bufferStride) * d->vi->format.bytesPerSample * (d->vi->format.sampleType == stInteger ? 2 : 1);
@@ -1680,7 +1687,7 @@ static void VS_CC sangnomFree(void *instanceData, VSCore *core, const VSAPI *vsa
 
 static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi)
 {
-    SangNomData *d = new SangNomData();
+    auto d = std::make_unique<SangNomData>();
 
     int err;
 
@@ -1688,8 +1695,8 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
     d->vi = vsapi->getVideoInfo(d->node);
 
     try {
-        if (d->vi->height % 2 != 0)
-            throw std::string("height must be even");
+        if (!vsh::isConstantVideoFormat(d->vi))
+            throw std::string("clip must have constant format and dimensions");
 
         d->order = vsapi->mapGetIntSaturated(in, "order", 0, &err);
         if (err)
@@ -1701,6 +1708,11 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
         d->dh = !!vsapi->mapGetInt(in, "dh", 0, &err);
         if (err)
             d->dh = false;
+
+        // the input holds both fields unless dh is used, in which case it is a
+        // single field and the doubled output height is always even anyway
+        if (!d->dh && d->vi->height % 2 != 0)
+            throw std::string("height must be even");
 
         int numAA = vsapi->mapNumElements(in, "aa");
         if (numAA > d->vi->format.numPlanes)
@@ -1761,12 +1773,13 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
     d->bufferHeight = (d->ovi.height + 1) >> 1;
 
     VSFilterDependency deps[] = { {d->node, rpStrictSpatial} };
-    vsapi->createVideoFilter(out, "SangNom", &d->ovi, sangnomGetFrame, sangnomFree, fmParallel, deps, 1, d, core);
+    vsapi->createVideoFilter(out, "SangNom", &d->ovi, sangnomGetFrame, sangnomFree, fmParallel, deps, 1, d.get(), core);
+    d.release();
 }
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) 
 {
-    vspapi->configPlugin("com.mio.sangnom", "sangnom", "VapourSynth Single Field Deinterlacer", VS_MAKE_VERSION(43, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->configPlugin("com.mio.sangnom", "sangnom", "VapourSynth Single Field Deinterlacer", VS_MAKE_VERSION(45, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
     vspapi->registerFunction("SangNom", "clip:vnode;"
         "order:int:opt;"
         "dh:int:opt;"
