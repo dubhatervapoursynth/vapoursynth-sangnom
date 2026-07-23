@@ -74,6 +74,12 @@ Or
 
 ***
 
+## Frame properties ##
+
+*   the output is always flagged progressive (`_FieldBased` = 0) because every output line is either taken from or interpolated from a single field.
+
+***
+
 ## License ##
 
     SangNom - VapourSynth Single Field Deinterlacer

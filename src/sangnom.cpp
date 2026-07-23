@@ -1585,6 +1585,8 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
         //auto dst = vsapi->copyFrame(src, core);
         auto dst = vsapi->newVideoFrame(&d->ovi.format, d->ovi.width, d->ovi.height, src, core);
 
+        vsapi->mapSetInt(vsapi->getFramePropertiesRW(dst), "_FieldBased", 0, maReplace);
+
         /////////////////////////////////////////////////////////////////////////////////////
         size_t bufferLineSize = static_cast<size_t>(d->bufferStride) * d->vi->format.bytesPerSample * (d->vi->format.sampleType == stInteger ? 2 : 1);
         void *bufferLine = vsh::vsh_aligned_malloc<void>(bufferLineSize, alignment);               // line buffer used in process buffers
@@ -1759,7 +1761,7 @@ static void VS_CC sangnomCreate(const VSMap *in, VSMap *out, void *userData, VSC
     d->bufferHeight = (d->ovi.height + 1) >> 1;
 
     VSFilterDependency deps[] = { {d->node, rpStrictSpatial} };
-    vsapi->createVideoFilter(out, "SangNom", d->vi, sangnomGetFrame, sangnomFree, fmParallel, deps, 1, d, core);
+    vsapi->createVideoFilter(out, "SangNom", &d->ovi, sangnomGetFrame, sangnomFree, fmParallel, deps, 1, d, core);
 }
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) 
