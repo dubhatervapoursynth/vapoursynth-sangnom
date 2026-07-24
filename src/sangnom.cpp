@@ -1609,8 +1609,6 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
             return nullptr;
         }
 
-        memset(bufferPool, 0, bufferPoolSize);
-
         void *buffers[TOTAL_BUFFERS];   // plane buffers used in all three steps
 
         // separate bufferpool to multiple pieces
@@ -1658,6 +1656,11 @@ static const VSFrame *VS_CC sangnomGetFrame(int n, int activationReason, void *i
                             dstp + vsapi->getStride(dst, plane),
                             vsapi->getFrameWidth(dst, plane) * d->vi->format.bytesPerSample);
             }
+
+            // the buffers are dimensioned for the largest plane and processed over their full
+            // size, so a smaller plane has to start from a clean slate instead of inheriting
+            // the padding left behind by the previous plane
+            memset(bufferPool, 0, bufferPoolSize);
 
             if (d->vi->format.sampleType == stInteger) {
                 if (d->vi->format.bitsPerSample == 8)
